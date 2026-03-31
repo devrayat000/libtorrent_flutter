@@ -1052,18 +1052,26 @@ struct SessionWrapper {
                             }
                         }
 
-                        // metadata_received → pause and zero-out file priorities
+                        // metadata_received → pause and zero-out file priorities (stream-only)
                         else if (auto* mra = lt::alert_cast<lt::metadata_received_alert>(a)) {
-                            try {
-                                auto ti = mra->handle.torrent_file();
-                                if (ti) {
-                                    int nf = ti->files().num_files();
-                                    std::vector<lt::download_priority_t> p(
-                                        (size_t)nf, lt::dont_download);
-                                    mra->handle.prioritize_files(p);
-                                    mra->handle.pause();
-                                }
-                            } catch (...) {}
+                            int64_t mid = id_for_handle(mra->handle);
+                            bool is_ephemeral = false;
+                            {
+                                std::lock_guard<std::mutex> lk(mu);
+                                is_ephemeral = ephemeral_torrents.count(mid) > 0;
+                            }
+                            if (is_ephemeral) {
+                                try {
+                                    auto ti = mra->handle.torrent_file();
+                                    if (ti) {
+                                        int nf = ti->files().num_files();
+                                        std::vector<lt::download_priority_t> p(
+                                            (size_t)nf, lt::dont_download);
+                                        mra->handle.prioritize_files(p);
+                                        mra->handle.pause();
+                                    }
+                                } catch (...) {}
+                            }
                         }
 
                         // queue alert for dart

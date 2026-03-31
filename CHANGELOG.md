@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.7.5
+
+- **FIX**: Added `is_ephemeral` check around the `metadata_received_alert` handler so that only streaming torrents get paused/zeroed after metadata, not regular downloads
+
 ## 1.7.4
 
 - **Streaming**: Removed `sequential_download` mode — piece order is now driven entirely by `set_piece_deadline`, libtorrent's purpose-built time-critical mechanism. Improves seek recovery and swarm efficiency
