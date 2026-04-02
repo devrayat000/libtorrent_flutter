@@ -267,7 +267,7 @@ jobs:
 
           git clone --depth 1 --branch openssl-3.2.1 https://github.com/openssl/openssl.git openssl-src
           cd openssl-src
-          export ANDROID_NDK_HOME=$NDK
+          export ANDROID_NDK_ROOT=$NDK
           export PATH=$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH
           ./Configure $OSSL_TARGET -D__ANDROID_API__=24 \
             --prefix=$PWD/../openssl-install \
