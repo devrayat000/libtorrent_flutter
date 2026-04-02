@@ -6,6 +6,11 @@
 - **Build (Android)**: Cross-compiles OpenSSL 3.2.1 as static libraries (`libssl.a`, `libcrypto.a`) for `arm64-v8a`, `armeabi-v7a`, and `x86_64` — no runtime OpenSSL dependency on the device
 - **Build (Android)**: Upgraded compiler optimization from `-O2` to `-O3` with link-time optimization (`-flto`) for faster piece hashing, alert processing, and streaming throughput
 - **Build (Android)**: Removed `-DTORRENT_USE_SSL=0` from the bridge build — encryption settings in C++ (`pe_enabled`/`pe_forced`) are no longer silently ignored
+- **Build (Android)**: Added `-fPIC` to OpenSSL cross-compilation for armeabi-v7a — fixes linker error with 32-bit ARM assembly relocations
+- **Streaming**: Reduced memory copies per piece from 3 to 1 — `ReadResult` now uses `shared_ptr<vector<char>>` so piece data flows from alert to cache to socket without redundant copies
+- **Streaming**: Widened priority lookahead from current+2 to current+5 pieces — more peers download ahead of playback, reducing stalls on unstable connections
+- **Streaming**: Expanded disk prefetch from 1 to 3 pieces — next 3 downloaded pieces are pre-read from libtorrent storage while the current piece is being sent to the player
+- **Streaming**: Increased socket send buffer from 2 MB to 8 MB — prevents kernel buffer stalls on fast networks
 
 ## 1.7.5
 

@@ -204,8 +204,13 @@ static void fill_status(lt_torrent_status& out, int64_t id,
 
 // ── read result for async piece reads ───────────────────────────────────────────
 struct ReadResult {
-    std::vector<char> data;
+    std::shared_ptr<std::vector<char>> data;
     bool ok = false;
+
+    ReadResult() : data(std::make_shared<std::vector<char>>()) {}
+    const char* buf() const { return data ? data->data() : nullptr; }
+    size_t size() const { return data ? data->size() : 0; }
+    bool empty() const { return !data || data->empty(); }
 };
 
 // ── alert record for dart queue ─────────────────────────────────────────────────
@@ -882,25 +887,32 @@ struct StreamEngine {
     void on_piece_read(int p, const char* data, int size, bool ok) {
         TB_LOG("on_piece_read: piece=%d ok=%d size=%d", p, (int)ok, size);
 
+        // Single allocation shared across read_results and hot cache
+        auto shared_buf = std::make_shared<std::vector<char>>();
+        if (ok && data && size > 0) {
+            shared_buf->assign(data, data + size);
+        }
+
         // Store result for read_piece_data() consumers
         {
             std::lock_guard<std::mutex> lk(read_mu);
             ReadResult r;
             if (ok && data && size > 0) {
-                r.data.assign(data, data + size);
+                r.data = shared_buf;
                 r.ok = true;
             }
             read_results[p] = std::move(r);
         }
 
         // Populate hot piece cache — instant re-reads for player probes,
-        // overlapping range requests, and small backward seeks
+        // overlapping range requests, and small backward seeks.
+        // Shares the same buffer — zero-copy from alert to cache.
         if (ok && data && size > 0 && cache) {
             auto* cp = cache->get_piece(p);
             if (cp) {
                 std::unique_lock<std::shared_mutex> lk(cp->mu);
                 if (cp->buffer.empty()) {
-                    cp->buffer.assign(data, data + size);
+                    cp->buffer = *shared_buf;  // copy once into cache's own buffer
                     cp->size = (int64_t)size;
                     cp->complete = true;
                     cp->accessed = TorrReader::now_unix();
@@ -1135,14 +1147,14 @@ static ReadResult read_piece_data(StreamEngine* s, int piece,
                                   int timeout_ms = 5000, int gen = -1) {
     if (gen < 0) gen = s->seek_generation.load();
 
-    // Check hot piece cache first — instant for re-reads
+    // Check hot piece cache first — instant for re-reads (zero-copy via shared_ptr)
     if (s->cache) {
         auto* cp = s->cache->get_piece(piece);
         if (cp) {
             std::shared_lock<std::shared_mutex> lk(cp->mu);
             if (!cp->buffer.empty() && cp->complete) {
                 ReadResult r;
-                r.data.assign(cp->buffer.begin(), cp->buffer.end());
+                r.data = std::make_shared<std::vector<char>>(cp->buffer);
                 r.ok = true;
                 return r;
             }
@@ -1268,17 +1280,19 @@ static bool serve_range(StreamEngine* s, TorrReader* reader, socket_t cli,
             // Prioritize this piece and next 2 — that's all.
             // Like lt2http: set_piece_priority(p, 0, priority{7})
             // then next pieces with staggered deadlines
-            TB_LOG("serve_range: piece=%d not ready, prioritizing p..p+2", p);
+            // Widened from +2 to +5 — more peers active, smoother streaming
+            TB_LOG("serve_range: piece=%d not ready, prioritizing p..p+5", p);
             try {
                 s->handle.piece_priority(lt::piece_index_t(p), lt::top_priority);
                 s->handle.set_piece_deadline(lt::piece_index_t(p), 0);
             } catch (...) {}
-            for (int i = 1; i <= 2 && p + i <= s->end_piece; ++i) {
+            for (int i = 1; i <= 5 && p + i <= s->end_piece; ++i) {
                 bool have_next = false;
                 { std::lock_guard<std::mutex> lk(s->piece_mu); have_next = s->pieces_have.count(p+i) > 0; }
                 if (!have_next) {
                     try {
-                        s->handle.piece_priority(lt::piece_index_t(p+i), lt::download_priority_t(6));
+                        int prio = (i <= 2) ? 7 : 6;
+                        s->handle.piece_priority(lt::piece_index_t(p+i), lt::download_priority_t(prio));
                         s->handle.set_piece_deadline(lt::piece_index_t(p+i), i * 50);
                     } catch (...) {}
                 }
@@ -1309,9 +1323,37 @@ static bool serve_range(StreamEngine* s, TorrReader* reader, socket_t cli,
         // Like lt2http: storage()->readv(b, p, offset, ...)
         // We use read_piece_data which does read_piece → waits for data
         ReadResult rd = read_piece_data(s, p, 10000, my_gen);
-        if (!rd.ok || rd.data.empty()) {
+        if (!rd.ok || rd.empty()) {
             TB_LOG("serve_range: read_piece_data FAILED piece=%d", p);
             return false;
+        }
+
+        // Pre-request next 3 pieces while we send the current one.
+        // This pipelines disk I/O with network I/O — by the time we
+        // finish sending this piece, the next pieces' data is likely ready.
+        if (!is_tail) {
+            for (int pf_i = 1; pf_i <= 3 && p + pf_i <= s->end_piece; ++pf_i) {
+                int pf_piece = p + pf_i;
+                bool pf_have = false;
+                { std::lock_guard<std::mutex> lk(s->piece_mu); pf_have = s->pieces_have.count(pf_piece) > 0; }
+                if (pf_have) {
+                    bool need_prefetch = true;
+                    {
+                        std::lock_guard<std::mutex> lk(s->read_mu);
+                        need_prefetch = (s->read_results.count(pf_piece) == 0);
+                    }
+                    if (need_prefetch && s->cache) {
+                        auto* pf_cp = s->cache->get_piece(pf_piece);
+                        if (pf_cp) {
+                            std::shared_lock<std::shared_mutex> pf_lk(pf_cp->mu);
+                            if (!pf_cp->buffer.empty() && pf_cp->complete) need_prefetch = false;
+                        }
+                    }
+                    if (need_prefetch) {
+                        try { s->handle.read_piece(lt::piece_index_t(pf_piece)); } catch (...) {}
+                    }
+                }
+            }
         }
 
         // Extract the slice we need from the piece
@@ -1320,11 +1362,11 @@ static bool serve_range(StreamEngine* s, TorrReader* reader, socket_t cli,
         int64_t off = abs_start - piece_start;
         int64_t nb  = send_end - sbeg + 1;
 
-        if (off < 0 || (size_t)off >= rd.data.size()) { cursor = send_end + 1; continue; }
-        if ((size_t)(off + nb) > rd.data.size()) nb = (int64_t)rd.data.size() - off;
+        if (off < 0 || (size_t)off >= rd.size()) { cursor = send_end + 1; continue; }
+        if ((size_t)(off + nb) > rd.size()) nb = (int64_t)rd.size() - off;
         if (nb <= 0) { cursor = send_end + 1; continue; }
 
-        if (send_all(cli, rd.data.data() + off, (int)nb) < 0)
+        if (send_all(cli, rd.buf() + off, (int)nb) < 0)
             return false;
 
         cursor = sbeg + nb;
@@ -1391,7 +1433,7 @@ static void handle_connection(StreamEngine* s, socket_t cli, int reader_id) {
 
     int opt = 1;
     ::setsockopt(cli, IPPROTO_TCP, TCP_NODELAY, (const char*)&opt, sizeof(opt));
-    int sndbuf = 2 * 1024 * 1024;
+    int sndbuf = 8 * 1024 * 1024;  // 8MB — prevents socket stalls on fast networks
     ::setsockopt(cli, SOL_SOCKET, SO_SNDBUF, (const char*)&sndbuf, sizeof(sndbuf));
 
 #ifdef _WIN32

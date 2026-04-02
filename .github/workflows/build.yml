@@ -271,6 +271,7 @@ jobs:
           export PATH=$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH
           ./Configure $OSSL_TARGET -D__ANDROID_API__=24 \
             --prefix=$PWD/../openssl-install \
+            -fPIC \
             no-shared no-tests no-ui-console no-docs
           make -j$(nproc)
           make install_sw
