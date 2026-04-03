@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.7.8
+
+- **Revert**: Rolled back streaming engine changes from 1.7.6–1.7.7 (wider priority window, prefetch changes, notifySeek API, FIN detection) — reverted to the stable 1.7.4 streaming logic with the 1.7.5 `is_ephemeral` bug fix
+- **Kept**: Android encryption build (OpenSSL 3.2.1, `-Dencryption=ON`, `-O3 -flto`) from 1.7.6
+
 ## 1.7.7
 
 - **Seeking**: Added `notifySeek()` API — Dart can now notify the native engine of a seek directly, bypassing HTTP detection entirely. When using players like mpv that buffer heavily (~150 MB demuxer cache), seeks within the cached region never triggered a new HTTP range request, causing 25+ second delays. The engine now responds to seeks within milliseconds regardless of player cache state
