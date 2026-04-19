@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.7.9
+
+- **Streaming**: Widened `serve_range` priority pipeline from current+2 to current+16 pieces with an 80 ms deadline gradient — keeps peer request queues full so the swarm doesn't idle between piece completions. The deadline picker still orders by deadline so the immediate piece keeps top focus, the extra entries just prevent pipeline starvation.
+- **Seeking**: Rewrote the HTTP seek-detection path to be minimal — `clear_piece_deadlines()` + a single `set_piece_deadline(seek_piece, 0)`, then let `serve_range` apply its normal 16-piece gradient on the first iteration. Removes ~1.2 s of artificial seek latency that came from the old 4-piece, 300 ms-stagger setup, and eliminates the picker double-rebuild that happened when seek-path priorities fought `serve_range`'s priorities.
+- **Settings**: `request_queue_time` 3 → 1 second — in-flight peer pipeline drains 3× faster on priority changes, making seek response correspondingly faster.
+- **Settings**: `whole_pieces_threshold` 20 → 0 — block requests within a piece now parallelize across multiple peers instead of being served by a single peer. Largest single seek-latency win on well-populated swarms.
+- **Settings**: `piece_extent_affinity` false → true — keeps a peer downloading the same file region instead of jumping around, reducing piece-completion variance (= less stutter during sustained playback).
+- **Settings**: `strict_end_game_mode` true → false — enables block-level duplication on the trailing edge of in-progress pieces. With strict mode + a small critical window, end-game never triggered and peers sat waiting on a single slow block; non-strict mode duplicates the last blocks across peers so one slow peer can't hold up a piece.
+- **Settings**: `max_queued_disk_bytes` 16 MB → 64 MB — absorbs burst writes when many peers deliver simultaneously right after a seek.
+
 ## 1.7.8
 
 - **Revert**: Rolled back streaming engine changes from 1.7.6–1.7.7 (wider priority window, prefetch changes, notifySeek API, FIN detection) — reverted to the stable 1.7.4 streaming logic with the 1.7.5 `is_ephemeral` bug fix

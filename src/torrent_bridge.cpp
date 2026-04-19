@@ -1265,21 +1265,27 @@ static bool serve_range(StreamEngine* s, TorrReader* reader, socket_t cli,
         }
 
         if (!have_it) {
-            // Prioritize this piece and next 2 — that's all.
-            // Like lt2http: set_piece_priority(p, 0, priority{7})
-            // then next pieces with staggered deadlines
-            TB_LOG("serve_range: piece=%d not ready, prioritizing p..p+2", p);
+            // Wider deadline pipeline: current + 16 pieces with stagger.
+            // The deadline picker orders by deadline, so i=0 still gets
+            // priority — the extra entries just keep peer request queues
+            // full so the swarm doesn't idle between piece completions.
+            // (Previous current+2 window was below libtorrent's own
+            //  request pipeline depth → peers sat idle after each piece.)
+            constexpr int PIPELINE_AHEAD = 16;
+            TB_LOG("serve_range: piece=%d not ready, prioritizing p..p+%d", p, PIPELINE_AHEAD);
             try {
                 s->handle.piece_priority(lt::piece_index_t(p), lt::top_priority);
                 s->handle.set_piece_deadline(lt::piece_index_t(p), 0);
             } catch (...) {}
-            for (int i = 1; i <= 2 && p + i <= s->end_piece; ++i) {
+            for (int i = 1; i <= PIPELINE_AHEAD && p + i <= s->end_piece; ++i) {
                 bool have_next = false;
                 { std::lock_guard<std::mutex> lk(s->piece_mu); have_next = s->pieces_have.count(p+i) > 0; }
                 if (!have_next) {
                     try {
-                        s->handle.piece_priority(lt::piece_index_t(p+i), lt::download_priority_t(6));
-                        s->handle.set_piece_deadline(lt::piece_index_t(p+i), i * 50);
+                        // First two stay at top, rest at priority 6
+                        auto pri = (i <= 2) ? lt::top_priority : lt::download_priority_t(6);
+                        s->handle.piece_priority(lt::piece_index_t(p+i), pri);
+                        s->handle.set_piece_deadline(lt::piece_index_t(p+i), i * 80);
                     } catch (...) {}
                 }
             }
@@ -1510,57 +1516,32 @@ static void handle_connection(StreamEngine* s, socket_t cli, int reader_id) {
                 int seek_piece = std::clamp(s->byte_to_piece(rstart),
                                             s->start_piece, s->end_piece);
                 try {
-                    // Seek strategy: dont_download old pieces (stops them),
-                    // deadlines on first 5 pieces so the pipeline doesn't
-                    // stall after the seek target arrives.
-                    // (1 deadline = target arrives fast but next piece stalls)
-
-                    // 1. Clear old deadlines
+                    // Minimal seek path — just unblock the picker, then let
+                    // serve_range do its normal 16-piece + 80ms gradient on
+                    // the very first piece it processes.
+                    //
+                    // Previous version did prioritize_pieces(full_vec) +
+                    // 4-piece window + 300ms stagger. That fought serve_range
+                    // (which immediately wanted 16 pieces) and added 1.2s of
+                    // artificial seek latency from the stagger alone.
+                    //
+                    // Keep this path tiny:
+                    //   1. clear deadlines (cancels old time-critical picks
+                    //      → cancel_non_critical patch fires immediately)
+                    //   2. fire ONE deadline on the seek target so the
+                    //      picker pivots NOW, before the first serve_range
+                    //      iteration runs (~1ms later)
+                    //   3. force-resume in case the torrent went to seeding
                     s->handle.clear_piece_deadlines();
-
-                    // 2. Priority map: old pieces → dont_download,
-                    //    seek target → top. Tail kept at low priority
-                    //    (already downloaded, just don't evict).
-                    //    CRITICAL: We must NOT mark ALL wanted pieces as
-                    //    "downloaded" because libtorrent will transition
-                    //    to finished→seeding and STOP all downloads.
-                    std::vector<lt::download_priority_t> prios(
-                        (size_t)s->ti->num_pieces(), lt::dont_download);
-
-                    // Tail pieces: low priority (1) to keep them available
-                    // but NOT top_priority — avoids "all wanted = done"
-                    for (int p = s->tail_start_piece; p <= s->end_piece; ++p)
-                        prios[p] = lt::download_priority_t(1);
-
-                    // Seek target + readahead at top priority (only 4 pieces
-                    // to focus bandwidth instead of spreading across 8+)
-                    for (int i = 0; i <= 3 && seek_piece + i <= s->end_piece; ++i)
-                        prios[seek_piece + i] = lt::top_priority;
-
-                    s->handle.prioritize_pieces(prios);
-
-                    // 3. Deadline ONLY on the seek target piece (deadline 0).
-                    //    This forces libtorrent to focus ALL peer bandwidth
-                    //    on this single piece first. Stagger the rest so
-                    //    they arrive in order after the target.
+                    s->handle.piece_priority(
+                        lt::piece_index_t(seek_piece), lt::top_priority);
                     s->handle.set_piece_deadline(
                         lt::piece_index_t(seek_piece), 0);
-                    for (int i = 1; i < 4 && seek_piece + i <= s->end_piece; ++i)
-                        s->handle.set_piece_deadline(
-                            lt::piece_index_t(seek_piece + i), i * 300);
-
-                    // 5. FORCE resume — prevents finished/seeding state
-                    //    which would kill all downloads.
                     s->handle.resume();
-
-                    // 6. Load data from disk for already-downloaded pieces
-                    for (int i = 0; i <= 3 && seek_piece + i <= s->end_piece; ++i)
-                        s->handle.read_piece(lt::piece_index_t(seek_piece + i));
-
-                    // 7. DON'T call clean_pieces() here — it triggers
-                    //    set_load_priority which overrides our focused
-                    //    seek priorities with 25-piece parallel downloads.
-                    //    serve_range will evict as needed per-piece.
+                    // If the seek target is already on disk, kick a read
+                    // immediately so serve_range's read_piece_data returns
+                    // without an extra round-trip.
+                    s->handle.read_piece(lt::piece_index_t(seek_piece));
                 } catch (...) {}
             }
 
@@ -1829,22 +1810,34 @@ TORRENT_API lt_session_t lt_create_session(const char* iface, int dl, int ul) {
         sp.set_int (lt::settings_pack::peer_timeout,              15);
         sp.set_int (lt::settings_pack::inactivity_timeout,        15);
 
-        // ── request pipeline — deeper queue keeps fast peers saturated ──
-        sp.set_int (lt::settings_pack::request_queue_time,        3);
+        // ── request pipeline — short queue time = fast seek response ──
+        // request_queue_time is SECONDS of outstanding requests per peer.
+        // At 3s, after a priority change peers take up to 3s to drain the
+        // pipe before serving new pieces. 1s = 3x faster seek response.
+        sp.set_int (lt::settings_pack::request_queue_time,        1);
         sp.set_int (lt::settings_pack::max_out_request_queue,     500);
         sp.set_int (lt::settings_pack::max_allowed_in_request_queue, 2000);
 
         // ── piece picking — WE control priorities ──
         sp.set_bool(lt::settings_pack::auto_sequential,           false);
-        sp.set_bool(lt::settings_pack::piece_extent_affinity,     false);
-        sp.set_bool(lt::settings_pack::strict_end_game_mode,      true);
+        // piece_extent_affinity=true: keep a peer downloading the same
+        // file region instead of jumping. Reduces piece-completion variance
+        // (= stutter). Designed exactly for streaming.
+        sp.set_bool(lt::settings_pack::piece_extent_affinity,     true);
+        // strict_end_game_mode=false: enables block-level duplication on
+        // the trailing edge of in-progress pieces. With strict=true and a
+        // 2-piece window, end-game NEVER triggers — peers sit waiting on a
+        // single slow block. false = duplicate the last blocks across peers.
+        sp.set_bool(lt::settings_pack::strict_end_game_mode,      false);
         sp.set_bool(lt::settings_pack::prioritize_partial_pieces, true);
         sp.set_int (lt::settings_pack::initial_picker_threshold,  0);
 
         // ── disk I/O ──
         sp.set_int (lt::settings_pack::aio_threads,               4);
         sp.set_int (lt::settings_pack::hashing_threads,           2);
-        sp.set_int (lt::settings_pack::max_queued_disk_bytes,     16 * 1024 * 1024);
+        // 64MB lets the disk pipeline absorb burst writes when many peers
+        // deliver simultaneously (common right after a seek).
+        sp.set_int (lt::settings_pack::max_queued_disk_bytes,     64 * 1024 * 1024);
         sp.set_int (lt::settings_pack::disk_io_read_mode,         lt::settings_pack::enable_os_cache);
         sp.set_int (lt::settings_pack::disk_io_write_mode,        lt::settings_pack::enable_os_cache);
         sp.set_int (lt::settings_pack::file_pool_size,            100);
@@ -1879,7 +1872,11 @@ TORRENT_API lt_session_t lt_create_session(const char* iface, int dl, int ul) {
         sp.set_bool(lt::settings_pack::no_recheck_incomplete_resume, true);
         sp.set_bool(lt::settings_pack::allow_multiple_connections_per_ip, true);
         sp.set_bool(lt::settings_pack::rate_limit_ip_overhead,    false);
-        sp.set_int (lt::settings_pack::whole_pieces_threshold,    20);
+        // whole_pieces_threshold=0: parallelize block requests across peers
+        // for every piece. At 20s, a 4MB piece comes from ONE peer (~800ms
+        // at 5MB/s). Parallel across 10 peers = ~80ms. Single biggest
+        // seek-latency win.
+        sp.set_int (lt::settings_pack::whole_pieces_threshold,    0);
         sp.set_int (lt::settings_pack::max_peerlist_size,         8000);
         sp.set_bool(lt::settings_pack::dont_count_slow_torrents,  true);
 
