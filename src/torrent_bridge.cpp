@@ -1330,6 +1330,36 @@ static bool serve_range(StreamEngine* s, TorrReader* reader, socket_t cli,
         if ((size_t)(off + nb) > rd.data.size()) nb = (int64_t)rd.data.size() - off;
         if (nb <= 0) { cursor = send_end + 1; continue; }
 
+        // ── disk-read prefetch ──
+        // While we're about to block on the socket send for piece p, kick off
+        // libtorrent disk reads for the next 1-2 pieces if they're already
+        // downloaded. By the time this send finishes and the loop advances,
+        // the read_piece_alert for p+1 is already in s->read_results, so
+        // read_piece_data(p+1) returns instantly instead of blocking another
+        // ~5-15 ms for the disk round trip. Classic socket-I/O ↔ disk-I/O
+        // overlap — free throughput on slow disks and during player buffering.
+        for (int i = 1; i <= 2; ++i) {
+            int np = p + i;
+            if (np > s->end_piece) break;
+            bool have_np = false;
+            { std::lock_guard<std::mutex> lk(s->piece_mu); have_np = s->pieces_have.count(np) > 0; }
+            if (!have_np) break;  // not downloaded yet → no point prefetching
+            // skip if already cached or result already buffered
+            bool already = false;
+            if (s->cache) {
+                if (auto* cp = s->cache->get_piece(np)) {
+                    std::shared_lock<std::shared_mutex> clk(cp->mu);
+                    if (!cp->buffer.empty() && cp->complete) already = true;
+                }
+            }
+            if (!already) {
+                std::lock_guard<std::mutex> rlk(s->read_mu);
+                if (s->read_results.count(np)) already = true;
+            }
+            if (already) continue;
+            try { s->handle.read_piece(lt::piece_index_t(np)); } catch (...) {}
+        }
+
         if (send_all(cli, rd.data.data() + off, (int)nb) < 0)
             return false;
 

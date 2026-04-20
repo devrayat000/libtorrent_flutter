@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.8.2
+
+- **Streaming: disk-read prefetch.** `serve_range` now kicks off
+  libtorrent disk reads for the next 1-2 pieces *before* blocking on
+  the socket send of the current piece. By the time the current send
+  finishes and the loop advances, the `read_piece_alert` for piece p+1
+  is already sitting in the results map, so the next
+  `read_piece_data()` call returns instantly instead of blocking ~5-15 ms
+  on a disk round trip. Free socket-I/O ↔ disk-I/O overlap — noticeable
+  on slow HDDs, large pieces, and whenever the player drains the
+  pipeline faster than one piece per RTT.
+
 ## 1.8.1
 
 - **Linux: fully self-contained binary.** OpenSSL is now statically linked
