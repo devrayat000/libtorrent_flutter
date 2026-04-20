@@ -52,10 +52,22 @@ jobs:
           find . -name "*.a" | head -5
         timeout-minutes: 20
 
-      - name: Build torrent_bridge (static linked)
+      - name: Build torrent_bridge (fully self-contained)
         run: |
           LT_LIB=$(find libtorrent-src/build -name "libtorrent-rasterbar.a" | head -1)
           echo "Static lib: $LT_LIB ($( du -h $LT_LIB | cut -f1 ))"
+
+          # Statically link OpenSSL so the resulting .so does NOT depend on
+          # the user having libssl3 / libcrypto3 installed on their distro.
+          # libssl-dev on Ubuntu 22.04 ships the static .a files alongside
+          # the .so files. Path differs per arch:
+          #   x64   -> /usr/lib/x86_64-linux-gnu/lib{ssl,crypto}.a
+          #   arm64 -> /usr/lib/aarch64-linux-gnu/lib{ssl,crypto}.a
+          MULTIARCH=$(dpkg-architecture -q DEB_HOST_MULTIARCH)
+          SSL_A=/usr/lib/${MULTIARCH}/libssl.a
+          CRYPTO_A=/usr/lib/${MULTIARCH}/libcrypto.a
+          echo "Using static OpenSSL: $SSL_A $CRYPTO_A"
+          test -f "$SSL_A" && test -f "$CRYPTO_A"
 
           mkdir -p build-linux
           g++ -shared -fPIC -O2 -std=c++17 \
@@ -65,10 +77,19 @@ jobs:
             -o build-linux/liblibtorrent_flutter.so \
             src/torrent_bridge.cpp \
             -Wl,--whole-archive "$LT_LIB" -Wl,--no-whole-archive \
-            -lssl -lcrypto -lpthread
+            -Wl,-Bstatic -l:libssl.a -l:libcrypto.a -Wl,-Bdynamic \
+            -lpthread -ldl
 
           ls -la build-linux/liblibtorrent_flutter.so
-          echo "✅ Linux ${{ matrix.arch }} static build succeeded"
+
+          # Verify no libssl/libcrypto runtime deps leaked in.
+          echo "=== Runtime dependencies ==="
+          ldd build-linux/liblibtorrent_flutter.so
+          if ldd build-linux/liblibtorrent_flutter.so | grep -E "libssl|libcrypto"; then
+            echo "❌ ERROR: .so still depends on libssl/libcrypto at runtime"
+            exit 1
+          fi
+          echo "✅ Linux ${{ matrix.arch }} fully self-contained build succeeded"
 
       - name: Copy to prebuilt
         run: |

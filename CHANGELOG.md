@@ -1,5 +1,30 @@
 # Changelog
 
+## 1.8.1
+
+- **Linux: fully self-contained binary.** OpenSSL is now statically linked
+  into `liblibtorrent_flutter.so` instead of being loaded from the user's
+  system at runtime. Previously consumers needed `libssl3` / `libcrypto3`
+  installed (failing on minimal containers and older distros). Now the
+  only runtime deps are libc / libstdc++ / libpthread, which every glibc
+  system ships. CI verifies this via an `ldd` post-link check that fails
+  the build if libssl/libcrypto leak into NEEDED. Matches the existing
+  fully-static behaviour of macOS / Windows / iOS / Android.
+- **Engine: ultimate streaming tweaks** for higher throughput on
+  mid-swarm torrents:
+  - `predictive_piece_announce = 500ms`: announce pieces before they
+    finish hashing so peers start requesting from us earlier; raises
+    reciprocity score → better unchoke priority on the next round.
+  - `allowed_enc_level = pe_both`: explicitly negotiate full-stream RC4
+    (MSE) when the peer supports it instead of header-only — bypasses
+    more ISP DPI throttling on plain BitTorrent.
+  - `prefer_udp_trackers = true`: try UDP trackers before HTTP for the
+    same hostname (~10× faster scrape responses, better cold-start).
+  - **Fallback public trackers**: when an `addMagnet()` URI ships with
+    zero trackers (just an info-hash), the bridge now seeds a curated
+    set of 8 reliable open UDP trackers so peer discovery doesn't have
+    to wait for DHT bootstrap (which can take 30-60s cold).
+
 ## 1.8.0
 
 - **Coverage**: Three new desktop architecture slices, prebuilt by CI:

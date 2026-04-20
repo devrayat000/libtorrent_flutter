@@ -1880,10 +1880,34 @@ TORRENT_API lt_session_t lt_create_session(const char* iface, int dl, int ul) {
         sp.set_int (lt::settings_pack::max_peerlist_size,         8000);
         sp.set_bool(lt::settings_pack::dont_count_slow_torrents,  true);
 
-        // encryption
+        // ── encryption (MSE/PE) ──
+        // pe_enabled (vs pe_forced) keeps plaintext as a fallback so we don't
+        // lose peers that don't speak MSE; the encrypted handshake is still
+        // tried first, which is what defeats most ISP DPI throttling.
         sp.set_int (lt::settings_pack::in_enc_policy,  lt::settings_pack::pe_enabled);
         sp.set_int (lt::settings_pack::out_enc_policy, lt::settings_pack::pe_enabled);
+        // both = negotiate full RC4 stream encryption when the peer supports
+        // it (header-only is the libtorrent default and is weaker against
+        // DPI). This is the actual ISP-throttling-bypass knob.
+        sp.set_int (lt::settings_pack::allowed_enc_level, lt::settings_pack::pe_both);
+        sp.set_bool(lt::settings_pack::prefer_rc4,         false);
         sp.set_int (lt::settings_pack::mixed_mode_algorithm, lt::settings_pack::peer_proportional);
+
+        // ── reciprocity boost ──
+        // Announce pieces ~500 ms before they finish hashing so peers can
+        // start requesting from us before we've even completed the piece.
+        // This raises our reciprocity score and gets us better unchoke
+        // priority from them on the next round — measurably helps streaming
+        // on mid-swarm torrents. Value is in MILLISECONDS, not seconds.
+        // 500 ms is enough for ~3-5× a typical WAN round-trip without
+        // announcing pieces that may still fail the hash check.
+        sp.set_int (lt::settings_pack::predictive_piece_announce, 500);
+
+        // ── tracker discovery ──
+        // UDP trackers answer ~10× faster than HTTP and have lower overhead
+        // for the tracker operator (=> more reliable scrape data). Try them
+        // first when both are available.
+        sp.set_bool(lt::settings_pack::prefer_udp_trackers, true);
 
         // port of btserver.go — spoof as qBittorrent 4.3.9
         sp.set_str (lt::settings_pack::user_agent,                 "qBittorrent/4.3.9");
@@ -1992,6 +2016,25 @@ TORRENT_API lt_torrent_id lt_add_magnet(lt_session_t session,
         atp.save_path = path;
         atp.flags &= ~lt::torrent_flags::paused;
         atp.flags &= ~lt::torrent_flags::auto_managed;
+
+        // Trackerless magnet (only an info-hash, no &tr=...)? Seed it with a
+        // curated set of public open trackers so peer discovery doesn't have
+        // to wait for DHT bootstrap (which can take 30-60s on a cold start).
+        // These are the same trackers shipped by qBittorrent's default
+        // "automatically add" list and TorrServer.
+        if (atp.trackers.empty()) {
+            static const char* kDefaultTrackers[] = {
+                "udp://tracker.opentrackr.org:1337/announce",
+                "udp://open.demonii.com:1337/announce",
+                "udp://open.stealth.si:80/announce",
+                "udp://tracker.torrent.eu.org:451/announce",
+                "udp://exodus.desync.com:6969/announce",
+                "udp://tracker.openbittorrent.com:6969/announce",
+                "udp://tracker.dler.org:6969/announce",
+                "udp://explodie.org:6969/announce",
+            };
+            for (auto* t : kDefaultTrackers) atp.trackers.emplace_back(t);
+        }
 
         if (stream_only) {
             atp.storage_mode = lt::storage_mode_sparse;
