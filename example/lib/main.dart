@@ -189,6 +189,7 @@ class _HomePageState extends State<HomePage> {
         TextEditingController(text: config.uploadRateLimit.toString());
     var forceEncrypt = config.forceEncrypt;
     var disableDht = config.disableDht;
+    var connLimit = config.connectionsLimit.toDouble();
 
     showDialog(
       context: context,
@@ -242,6 +243,25 @@ class _HomePageState extends State<HomePage> {
                       onChanged: (v) =>
                           setDialogState(() => disableDht = v),
                     ),
+
+                    // Per-torrent connections limit.
+                    // Lower (5–25) often streams BETTER on high-seed swarms
+                    // — fewer peers = less head-of-line blocking by slow ones.
+                    // TorrServer's default is 25.
+                    ListTile(
+                      title: const Text('Connections per torrent'),
+                      subtitle: Text('${connLimit.toInt()} '
+                          '(low = better for high-seed streaming)'),
+                    ),
+                    Slider(
+                      min: 5,
+                      max: 200,
+                      divisions: 39,
+                      value: connLimit.clamp(5, 200),
+                      label: connLimit.toInt().toString(),
+                      onChanged: (v) =>
+                          setDialogState(() => connLimit = v),
+                    ),
                   ],
                 ),
               ),
@@ -260,6 +280,7 @@ class _HomePageState extends State<HomePage> {
                           int.tryParse(ulLimitCtrl.text) ?? 0,
                       forceEncrypt: forceEncrypt,
                       disableDht: disableDht,
+                      connectionsLimit: connLimit.toInt(),
                     ));
                     Navigator.pop(ctx);
                   },

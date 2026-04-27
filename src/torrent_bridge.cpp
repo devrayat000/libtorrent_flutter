@@ -1828,7 +1828,10 @@ TORRENT_API lt_session_t lt_create_session(const char* iface, int dl, int ul) {
         sp.set_int (lt::settings_pack::connection_speed,          200);
         sp.set_int (lt::settings_pack::torrent_connect_boost,     200);
         sp.set_bool(lt::settings_pack::smooth_connects,           false);
-        sp.set_int (lt::settings_pack::connections_limit,         500);
+        // Session-wide cap. Per-torrent cap (default 25) is what actually
+        // governs streaming fanout — see set_max_connections() in
+        // lt_start_stream. Keep this comfortably above per-torrent * active.
+        sp.set_int (lt::settings_pack::connections_limit,         200);
         sp.set_int (lt::settings_pack::min_reconnect_time,        5);
         sp.set_int (lt::settings_pack::max_failcount,             3);
         sp.set_int (lt::settings_pack::peer_connect_timeout,      5);
@@ -2341,9 +2344,17 @@ TORRENT_API lt_stream_id lt_start_stream(lt_session_t session,
                            : (64 * 1024 * 1024);
     s->cache = std::make_unique<TorrCache>();
     s->cache->init(cache_capacity, s->piece_length, ti->num_pieces(), handle);
-    // apply session-level connections_limit to cache
-    if (sw->bt_config.connections_limit > 0)
+    // apply session-level connections_limit to cache AND to libtorrent.
+    // The cache field is informational; the actual swarm-fanout cap lives
+    // on torrent_handle::set_max_connections(). Without this call, every
+    // torrent inherits the session-wide 200 cap and on high-seed swarms
+    // the time-critical picker fans block requests across hundreds of
+    // peers — head-of-line blocked by the slowest one. TorrServer caps at
+    // 25 per torrent for exactly this reason.
+    if (sw->bt_config.connections_limit > 0) {
         s->cache->connections_limit = sw->bt_config.connections_limit;
+        try { handle.set_max_connections(sw->bt_config.connections_limit); } catch (...) {}
+    }
     // apply session-level reader_read_ahead to cache
     if (sw->bt_config.reader_read_ahead >= 5 && sw->bt_config.reader_read_ahead <= 100)
         s->cache->reader_read_ahead_pct = sw->bt_config.reader_read_ahead;
@@ -2643,8 +2654,11 @@ TORRENT_API void lt_set_cache_settings(lt_session_t session, lt_stream_id sid,
         s->cache->capacity = capacity;
     if (read_ahead_pct >= 5 && read_ahead_pct <= 100)
         s->cache->reader_read_ahead_pct = read_ahead_pct;
-    if (connections_limit > 0)
+    if (connections_limit > 0) {
         s->cache->connections_limit = connections_limit;
+        // Wire to libtorrent so it actually takes effect on the swarm.
+        try { s->handle.set_max_connections(connections_limit); } catch (...) {}
+    }
 }
 
 // ── engine config — port of settings/btsets.go + btserver.go configure() ────────
