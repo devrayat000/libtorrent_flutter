@@ -2761,6 +2761,27 @@ TORRENT_API void lt_configure_session(lt_session_t session,
     try {
         sw->session.apply_settings(sp);
     } catch (...) {}
+
+    // Re-apply stream-local settings to active streams as well. Without
+    // this, configureSession() only affects streams created AFTER the call,
+    // so changing connections_limit while a stream is already playing does
+    // nothing until the user stops and restarts streaming.
+    {
+        std::lock_guard<std::mutex> lk(sw->streams_mu);
+        for (auto& kv : sw->streams) {
+            auto* s = kv.second.get();
+            if (!s || !s->cache) continue;
+
+            if (cfg.cache_size > 0)
+                s->cache->capacity = cfg.cache_size;
+            if (cfg.reader_read_ahead >= 5 && cfg.reader_read_ahead <= 100)
+                s->cache->reader_read_ahead_pct = cfg.reader_read_ahead;
+            if (cfg.connections_limit > 0) {
+                s->cache->connections_limit = cfg.connections_limit;
+                try { s->handle.set_max_connections(cfg.connections_limit); } catch (...) {}
+            }
+        }
+    }
 }
 
 TORRENT_API void lt_get_default_config(lt_bt_config* out) {
