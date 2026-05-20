@@ -602,7 +602,7 @@ extern "C"
                 int priority_val = 4;
                 if (i < (int)priorities.size())
                 {
-                    priority_val = static_cast<int>(priorities[i]);
+                    priority_val = static_cast<int>(static_cast<std::uint8_t>(priorities[i]));
                 }
                 out[n].priority = priority_val;
             }
@@ -666,7 +666,7 @@ extern "C"
             int n = 0;
             for (int i = 0; i < (int)p.size() && n < max_count; ++i)
             {
-                out[n++] = static_cast<int32_t>(p[i]);
+                out[n++] = static_cast<int32_t>(static_cast<std::uint8_t>(p[i]));
             }
             return n;
         }
