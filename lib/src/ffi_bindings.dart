@@ -29,6 +29,9 @@ final class LtTorrentStatus extends Struct {
   @Int32()   external int isFinished;
   @Int32()   external int hasMetadata;
   @Int32()   external int queuePosition;
+  @Int32()   external int downloadLimit;
+  @Int32()   external int uploadLimit;
+  @Int32()   external int isAutoManaged;
 }
 
 // ─── lt_file_info ─────────────────────────────────────────────────────────────
@@ -38,6 +41,7 @@ final class LtFileInfo extends Struct {
   @Array(1024) external Array<Char> path;
   @Int64()     external int size;
   @Int32()     external int isStreamable;
+  @Int32()     external int priority;
 }
 
 // ─── lt_stream_status ─────────────────────────────────────────────────────────
@@ -91,14 +95,14 @@ typedef LtSetAlertCallback = void Function(
 
 // ─── Torrent management ──────────────────────────────────────────────────────
 typedef _AddMagnetN = Int64 Function(
-    Pointer<LtSessionOpaque>, Pointer<Utf8>, Pointer<Utf8>, Int32);
+    Pointer<LtSessionOpaque>, Pointer<Utf8>, Pointer<Utf8>, Int32, Int32, Int32);
 typedef LtAddMagnet = int Function(
-    Pointer<LtSessionOpaque>, Pointer<Utf8>, Pointer<Utf8>, int);
+    Pointer<LtSessionOpaque>, Pointer<Utf8>, Pointer<Utf8>, int, int, int);
 
 typedef _AddTorrentFileN = Int64 Function(
-    Pointer<LtSessionOpaque>, Pointer<Utf8>, Pointer<Utf8>, Int32);
+    Pointer<LtSessionOpaque>, Pointer<Utf8>, Pointer<Utf8>, Int32, Int32, Int32);
 typedef LtAddTorrentFile = int Function(
-    Pointer<LtSessionOpaque>, Pointer<Utf8>, Pointer<Utf8>, int);
+    Pointer<LtSessionOpaque>, Pointer<Utf8>, Pointer<Utf8>, int, int, int);
 
 typedef _RemoveTorrentN = Void Function(
     Pointer<LtSessionOpaque>, Int64, Int32);
@@ -140,6 +144,11 @@ typedef LtGetFiles = int Function(
 typedef _SetFilePrioritiesN = Void Function(
     Pointer<LtSessionOpaque>, Int64, Pointer<Int32>, Int32);
 typedef LtSetFilePriorities = void Function(
+    Pointer<LtSessionOpaque>, int, Pointer<Int32>, int);
+
+typedef _GetFilePrioritiesN = Int32 Function(
+    Pointer<LtSessionOpaque>, Int64, Pointer<Int32>, Int32);
+typedef LtGetFilePriorities = int Function(
     Pointer<LtSessionOpaque>, int, Pointer<Int32>, int);
 
 // ─── Stream management ──────────────────────────────────────────────────────
@@ -190,6 +199,9 @@ final class LtBtConfig extends Struct {
   @Int32()  external int downloadRateLimit;
   @Int32()  external int uploadRateLimit;
   @Int32()  external int peersListenPort;
+  @Int32()  external int activeDownloadsLimit;
+  @Int32()  external int activeSeedsLimit;
+  @Int32()  external int activeLimit;
   @Int32()  external int responsiveMode;
 }
 
@@ -211,6 +223,24 @@ typedef LtSetDownloadLimit = void Function(Pointer<LtSessionOpaque>, int);
 
 typedef _SetUploadLimitN = Void Function(Pointer<LtSessionOpaque>, Int32);
 typedef LtSetUploadLimit = void Function(Pointer<LtSessionOpaque>, int);
+
+typedef _SetTorrentDownloadLimitN = Void Function(
+    Pointer<LtSessionOpaque>, Int64, Int32);
+typedef LtSetTorrentDownloadLimit = void Function(
+    Pointer<LtSessionOpaque>, int, int);
+
+typedef _SetTorrentUploadLimitN = Void Function(
+    Pointer<LtSessionOpaque>, Int64, Int32);
+typedef LtSetTorrentUploadLimit = void Function(
+    Pointer<LtSessionOpaque>, int, int);
+
+typedef _SetTorrentAutoManagedN = Void Function(
+    Pointer<LtSessionOpaque>, Int64, Int32);
+typedef LtSetTorrentAutoManaged = void Function(
+    Pointer<LtSessionOpaque>, int, int);
+
+typedef _QueueCtrlN = Void Function(Pointer<LtSessionOpaque>, Int64);
+typedef LtQueueCtrl = void Function(Pointer<LtSessionOpaque>, int);
 
 // ─── Utility ─────────────────────────────────────────────────────────────────
 typedef _LastErrorN = Pointer<Utf8> Function();
@@ -269,12 +299,20 @@ class TorrentBridgeBindings {
   late final LtGetFileCount       getFileCount;
   late final LtGetFiles           getFiles;
   late final LtSetFilePriorities  setFilePriorities;
+  late final LtGetFilePriorities  getFilePriorities;
   late final LtStartStream        startStream;
   late final LtStopStream         stopStream;
   late final LtGetStreamStatus    getStreamStatus;
   late final LtGetAllStreamStatuses getAllStreamStatuses;
   late final LtSetDownloadLimit   setDownloadLimit;
   late final LtSetUploadLimit     setUploadLimit;
+  late final LtSetTorrentDownloadLimit setTorrentDownloadLimit;
+  late final LtSetTorrentUploadLimit   setTorrentUploadLimit;
+  late final LtSetTorrentAutoManaged   setTorrentAutoManaged;
+  late final LtQueueCtrl          queueUp;
+  late final LtQueueCtrl          queueDown;
+  late final LtQueueCtrl          queueTop;
+  late final LtQueueCtrl          queueBottom;
   late final LtPreloadStream      preloadStream;
   late final LtSetCacheSettings   setCacheSettings;
   late final LtConfigureSession   configureSession;
@@ -300,12 +338,20 @@ class TorrentBridgeBindings {
     getFileCount        = _lib.lookup<NativeFunction<_GetFileCountN>>('lt_get_file_count').asFunction<LtGetFileCount>();
     getFiles            = _lib.lookup<NativeFunction<_GetFilesN>>('lt_get_files').asFunction<LtGetFiles>();
     setFilePriorities   = _lib.lookup<NativeFunction<_SetFilePrioritiesN>>('lt_set_file_priorities').asFunction<LtSetFilePriorities>();
+    getFilePriorities   = _lib.lookup<NativeFunction<_GetFilePrioritiesN>>('lt_get_file_priorities').asFunction<LtGetFilePriorities>();
     startStream         = _lib.lookup<NativeFunction<_StartStreamN>>('lt_start_stream').asFunction<LtStartStream>();
     stopStream          = _lib.lookup<NativeFunction<_StopStreamN>>('lt_stop_stream').asFunction<LtStopStream>();
     getStreamStatus     = _lib.lookup<NativeFunction<_GetStreamStatusN>>('lt_get_stream_status').asFunction<LtGetStreamStatus>();
     getAllStreamStatuses = _lib.lookup<NativeFunction<_GetAllStreamStatusesN>>('lt_get_all_stream_statuses').asFunction<LtGetAllStreamStatuses>();
     setDownloadLimit    = _lib.lookup<NativeFunction<_SetDownloadLimitN>>('lt_set_download_limit').asFunction<LtSetDownloadLimit>();
     setUploadLimit      = _lib.lookup<NativeFunction<_SetUploadLimitN>>('lt_set_upload_limit').asFunction<LtSetUploadLimit>();
+    setTorrentDownloadLimit = _lib.lookup<NativeFunction<_SetTorrentDownloadLimitN>>('lt_set_torrent_download_limit').asFunction<LtSetTorrentDownloadLimit>();
+    setTorrentUploadLimit   = _lib.lookup<NativeFunction<_SetTorrentUploadLimitN>>('lt_set_torrent_upload_limit').asFunction<LtSetTorrentUploadLimit>();
+    setTorrentAutoManaged   = _lib.lookup<NativeFunction<_SetTorrentAutoManagedN>>('lt_set_torrent_auto_managed').asFunction<LtSetTorrentAutoManaged>();
+    queueUp             = _lib.lookup<NativeFunction<_QueueCtrlN>>('lt_queue_up').asFunction<LtQueueCtrl>();
+    queueDown           = _lib.lookup<NativeFunction<_QueueCtrlN>>('lt_queue_down').asFunction<LtQueueCtrl>();
+    queueTop            = _lib.lookup<NativeFunction<_QueueCtrlN>>('lt_queue_top').asFunction<LtQueueCtrl>();
+    queueBottom         = _lib.lookup<NativeFunction<_QueueCtrlN>>('lt_queue_bottom').asFunction<LtQueueCtrl>();
     preloadStream       = _lib.lookup<NativeFunction<_PreloadStreamN>>('lt_preload_stream').asFunction<LtPreloadStream>();
     setCacheSettings    = _lib.lookup<NativeFunction<_SetCacheSettingsN>>('lt_set_cache_settings').asFunction<LtSetCacheSettings>();
     configureSession    = _lib.lookup<NativeFunction<_ConfigureSessionN>>('lt_configure_session').asFunction<LtConfigureSession>();

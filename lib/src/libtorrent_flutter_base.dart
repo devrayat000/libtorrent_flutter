@@ -11,92 +11,8 @@ import 'package:ffi/ffi.dart';
 
 import 'ffi_bindings.dart';
 import 'models.dart';
-
-// ─── Tracker Management ─────────────────────────────────────────────────────
-
-/// Automatically fetches and injects best public trackers into magnet URIs.
-class TrackerManager {
-  static final List<String> _extraTrackers = [];
-
-  /// Fetch the latest best-performing tracker list from GitHub.
-  static Future<void> fetchBestTrackers() async {
-    try {
-      final client = HttpClient();
-      client.connectionTimeout = const Duration(seconds: 5);
-      final req = await client.getUrl(Uri.parse(
-          'https://raw.githubusercontent.com/ngosang/trackerslist/master/trackers_best.txt'));
-      final res = await req.close();
-      if (res.statusCode == 200) {
-        final body = await res.transform(const SystemEncoding().decoder).join();
-        final list = body
-            .split('\n')
-            .map((s) => s.trim())
-            .where((s) => s.isNotEmpty)
-            .toList();
-        _extraTrackers.clear();
-        _extraTrackers.addAll(list);
-      }
-      client.close(force: true);
-    } catch (_) {}
-  }
-
-  /// Inject extra trackers into a magnet URI for better peer discovery.
-  static String injectTrackers(String magnetUri) {
-    if (_extraTrackers.isEmpty) return magnetUri;
-    var uri = magnetUri;
-    for (final tr in _extraTrackers) {
-      if (!uri.contains(Uri.encodeComponent(tr))) {
-        uri += '&tr=${Uri.encodeComponent(tr)}';
-      }
-    }
-    return uri;
-  }
-}
-
-// ─── Status converters ──────────────────────────────────────────────────────
-
-TorrentInfo _toTorrentInfo(LtTorrentStatus s) => TorrentInfo(
-  id:            s.id,
-  name:          readCharArray(s.name, 512),
-  savePath:      readCharArray(s.savePath, 1024),
-  errorMsg:      readCharArray(s.errorMsg, 256),
-  state:         stateFromInt(s.state),
-  progress:      s.progress.clamp(0.0, 1.0),
-  downloadRate:  s.downloadRate,
-  uploadRate:    s.uploadRate,
-  totalDone:     s.totalDone,
-  totalWanted:   s.totalWanted,
-  totalUploaded: s.totalUploaded,
-  numPeers:      s.numPeers,
-  numSeeds:      s.numSeeds,
-  isPaused:      s.isPaused != 0,
-  isFinished:    s.isFinished != 0,
-  hasMetadata:   s.hasMetadata != 0,
-  queuePosition: s.queuePosition,
-);
-
-FileInfo _toFileInfo(LtFileInfo f) => FileInfo(
-  index:        f.index,
-  name:         readCharArray(f.name, 512),
-  path:         readCharArray(f.path, 1024),
-  size:         f.size,
-  isStreamable: f.isStreamable != 0,
-);
-
-StreamInfo _toStreamInfo(LtStreamStatus s) => StreamInfo(
-  id:              s.id,
-  torrentId:       s.torrentId,
-  fileIndex:       s.fileIndex,
-  url:             readCharArray(s.url, 256),
-  fileSize:        s.fileSize,
-  readHead:        s.readHead,
-  streamState:     streamStateFromInt(s.streamState),
-  bufferSeconds:   s.bufferSeconds,
-  bufferPieces:    s.bufferPieces,
-  readaheadWindow: s.readaheadWindow,
-  activePeers:     s.activePeers,
-  downloadRate:    s.downloadRate,
-);
+import 'tracker_manager.dart';
+import 'status_converters.dart';
 
 // ─── LibtorrentFlutter ──────────────────────────────────────────────────────
 
@@ -205,29 +121,59 @@ class LibtorrentFlutter {
   ///
   /// Returns the torrent ID. [savePath] defaults to the path set in init().
   /// Set [streamOnly] to true to prevent background downloading.
-  int addMagnet(String magnetUri, [String? savePath, bool streamOnly = false]) {
+  /// Set [paused] to true to add the torrent in paused state.
+  /// Set [autoManaged] to false to disable auto-management by the queue manager.
+  int addMagnet(
+    String magnetUri, [
+    String? savePath,
+    bool streamOnly = false,
+    bool paused = false,
+    bool autoManaged = true,
+  ]) {
     final enhanced = TrackerManager.injectTrackers(magnetUri);
     final m = enhanced.toNativeUtf8();
     final s = (savePath ?? _defaultSavePath).toNativeUtf8();
     try {
-      final id = _b.addMagnet(_session, m, s, streamOnly ? 1 : 0);
+      final id = _b.addMagnet(
+        _session,
+        m,
+        s,
+        streamOnly ? 1 : 0,
+        paused ? 1 : 0,
+        autoManaged ? 1 : 0,
+      );
       if (id < 0) throw Exception(_b.lastError().toDartString());
       return id;
     } finally {
-      malloc.free(m); malloc.free(s);
+      malloc.free(m);
+      malloc.free(s);
     }
   }
 
   /// Add a torrent from a .torrent file path.
-  int addTorrentFile(String filePath, [String? savePath, bool streamOnly = false]) {
+  int addTorrentFile(
+    String filePath, [
+    String? savePath,
+    bool streamOnly = false,
+    bool paused = false,
+    bool autoManaged = true,
+  ]) {
     final f = filePath.toNativeUtf8();
     final s = (savePath ?? _defaultSavePath).toNativeUtf8();
     try {
-      final id = _b.addTorrentFile(_session, f, s, streamOnly ? 1 : 0);
+      final id = _b.addTorrentFile(
+        _session,
+        f,
+        s,
+        streamOnly ? 1 : 0,
+        paused ? 1 : 0,
+        autoManaged ? 1 : 0,
+      );
       if (id < 0) throw Exception(_b.lastError().toDartString());
       return id;
     } finally {
-      malloc.free(f); malloc.free(s);
+      malloc.free(f);
+      malloc.free(s);
     }
   }
 
@@ -256,13 +202,13 @@ class LibtorrentFlutter {
     final buf = calloc<LtFileInfo>(count);
     try {
       final n = _b.getFiles(_session, torrentId, buf, count);
-      return List.generate(n, (i) => _toFileInfo(buf[i]));
+      return List.generate(n, (i) => toFileInfo(buf[i]));
     } finally {
       calloc.free(buf);
     }
   }
 
-  /// Set download priorities per file (0 = skip, 1-7 = priority levels).
+  /// Set download priorities per file (0 = skip, 1 = lowest, 4 = normal, 7 = highest).
   void setFilePriorities(int torrentId, List<int> priorities) {
     final count = priorities.length;
     final buf = calloc<Int32>(count);
@@ -271,6 +217,19 @@ class LibtorrentFlutter {
         buf[i] = priorities[i];
       }
       _b.setFilePriorities(_session, torrentId, buf, count);
+    } finally {
+      calloc.free(buf);
+    }
+  }
+
+  /// Get download priorities per file (0 = skip, 1 = lowest, 4 = normal, 7 = highest).
+  List<int> getFilePriorities(int torrentId) {
+    final count = _b.getFileCount(_session, torrentId);
+    if (count <= 0) return [];
+    final buf = calloc<Int32>(count);
+    try {
+      final n = _b.getFilePriorities(_session, torrentId, buf, count);
+      return List.generate(n, (i) => buf[i]);
     } finally {
       calloc.free(buf);
     }
@@ -292,7 +251,7 @@ class LibtorrentFlutter {
     try {
       final ok = _b.getStreamStatus(_session, streamId, statusBuf);
       if (ok == 0) throw Exception('Failed to get stream status');
-      final info = _toStreamInfo(statusBuf.ref);
+      final info = toStreamInfo(statusBuf.ref);
       _streams[streamId] = info;
       _streamsCtrl.add(Map.unmodifiable(_streams));
       return info;
@@ -349,11 +308,37 @@ class LibtorrentFlutter {
 
   // ─── Speed Limits ─────────────────────────────────────────────────────────
 
-  /// Set download speed limit in bytes/sec (0 = unlimited).
+  /// Set global download speed limit in bytes/sec (0 = unlimited).
   void setDownloadLimit(int bps) => _b.setDownloadLimit(_session, bps);
 
-  /// Set upload speed limit in bytes/sec (0 = unlimited).
+  /// Set global upload speed limit in bytes/sec (0 = unlimited).
   void setUploadLimit(int bps) => _b.setUploadLimit(_session, bps);
+
+  /// Set per-torrent download speed limit in bytes/sec (0 = unlimited).
+  void setTorrentDownloadLimit(int torrentId, int bps) =>
+      _b.setTorrentDownloadLimit(_session, torrentId, bps);
+
+  /// Set per-torrent upload speed limit in bytes/sec (0 = unlimited).
+  void setTorrentUploadLimit(int torrentId, int bps) =>
+      _b.setTorrentUploadLimit(_session, torrentId, bps);
+
+  // ─── Queue Management & Auto-Managed Toggles ──────────────────────────────
+
+  /// Enable or disable auto-management for a specific torrent.
+  void setTorrentAutoManaged(int torrentId, bool autoManaged) =>
+      _b.setTorrentAutoManaged(_session, torrentId, autoManaged ? 1 : 0);
+
+  /// Move torrent up in the download queue.
+  void queueUp(int torrentId) => _b.queueUp(_session, torrentId);
+
+  /// Move torrent down in the download queue.
+  void queueDown(int torrentId) => _b.queueDown(_session, torrentId);
+
+  /// Move torrent to the top of the download queue.
+  void queueTop(int torrentId) => _b.queueTop(_session, torrentId);
+
+  /// Move torrent to the bottom of the download queue.
+  void queueBottom(int torrentId) => _b.queueBottom(_session, torrentId);
 
   // ─── Engine Configuration — port of settings/btsets.go + btserver.go ───────
 
@@ -380,6 +365,9 @@ class LibtorrentFlutter {
       cfgPtr.ref.downloadRateLimit = config.downloadRateLimit;
       cfgPtr.ref.uploadRateLimit = config.uploadRateLimit;
       cfgPtr.ref.peersListenPort = config.peersListenPort;
+      cfgPtr.ref.activeDownloadsLimit = config.activeDownloadsLimit;
+      cfgPtr.ref.activeSeedsLimit = config.activeSeedsLimit;
+      cfgPtr.ref.activeLimit = config.activeLimit;
       cfgPtr.ref.responsiveMode = config.responsiveMode ? 1 : 0;
       _b.configureSession(_session, cfgPtr);
     } finally {
@@ -411,6 +399,9 @@ class LibtorrentFlutter {
         downloadRateLimit: cfgPtr.ref.downloadRateLimit,
         uploadRateLimit: cfgPtr.ref.uploadRateLimit,
         peersListenPort: cfgPtr.ref.peersListenPort,
+        activeDownloadsLimit: cfgPtr.ref.activeDownloadsLimit,
+        activeSeedsLimit: cfgPtr.ref.activeSeedsLimit,
+        activeLimit: cfgPtr.ref.activeLimit,
         responsiveMode: cfgPtr.ref.responsiveMode != 0,
       );
     } finally {
@@ -444,9 +435,6 @@ class LibtorrentFlutter {
 
   static void _onAlert(int type, int torrentId, Pointer<Utf8> message, Pointer<Void> userData) {
     // Silently consume alerts — users can listen to torrentUpdates for state changes.
-    // Uncomment for debugging:
-    // final msg = message.toDartString();
-    // print('LibtorrentFlutter Alert: [T$torrentId] $msg');
   }
 
   void _pollTorrents() {
@@ -458,7 +446,7 @@ class LibtorrentFlutter {
       final seen = <int>{};
 
       for (var i = 0; i < n; i++) {
-        final info = _toTorrentInfo(buf[i]);
+        final info = toTorrentInfo(buf[i]);
         seen.add(info.id);
         final old = _torrents[info.id];
         if (old == null || _changed(old, info)) {
@@ -482,7 +470,7 @@ class LibtorrentFlutter {
       final n = _b.getAllStreamStatuses(_session, buf, _maxStreams);
       bool changed = false;
       for (var i = 0; i < n; i++) {
-        final info = _toStreamInfo(buf[i]);
+        final info = toStreamInfo(buf[i]);
         final old  = _streams[info.id];
         if (old == null ||
             old.streamState != info.streamState ||
@@ -502,15 +490,19 @@ class LibtorrentFlutter {
   }
 
   bool _changed(TorrentInfo a, TorrentInfo b) =>
-      a.state       != b.state       ||
-      a.progress    != b.progress    ||
-      a.downloadRate!= b.downloadRate||
-      a.uploadRate  != b.uploadRate  ||
-      a.totalDone   != b.totalDone   ||
-      a.numPeers    != b.numPeers    ||
-      a.isPaused    != b.isPaused    ||
-      a.hasMetadata != b.hasMetadata ||
-      a.name        != b.name;
+      a.state         != b.state         ||
+      a.progress      != b.progress      ||
+      a.downloadRate  != b.downloadRate  ||
+      a.uploadRate    != b.uploadRate    ||
+      a.totalDone     != b.totalDone     ||
+      a.numPeers      != b.numPeers      ||
+      a.isPaused      != b.isPaused      ||
+      a.hasMetadata   != b.hasMetadata   ||
+      a.name          != b.name          ||
+      a.downloadLimit != b.downloadLimit ||
+      a.uploadLimit   != b.uploadLimit   ||
+      a.isAutoManaged != b.isAutoManaged ||
+      a.queuePosition != b.queuePosition;
 
   // ─── Cleanup ───────────────────────────────────────────────────────────────
 

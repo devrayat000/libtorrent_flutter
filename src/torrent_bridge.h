@@ -58,6 +58,9 @@ typedef struct {
     int32_t       is_finished;
     int32_t       has_metadata;
     int32_t       queue_position;
+    int32_t       download_limit;
+    int32_t       upload_limit;
+    int32_t       is_auto_managed;
 } lt_torrent_status;
 
 typedef struct {
@@ -66,6 +69,7 @@ typedef struct {
     char    path[1024];
     int64_t size;
     int32_t is_streamable;
+    int32_t priority;
 } lt_file_info;
 
 typedef struct {
@@ -104,6 +108,11 @@ typedef struct {
     int32_t upload_rate_limit;       /* KB/s, 0=unlimited */
     int32_t peers_listen_port;       /* 0=random (default) */
 
+    /* Queue limits */
+    int32_t active_downloads_limit;  /* max active downloading torrents, 0=no limit */
+    int32_t active_seeds_limit;      /* max active seeding torrents, 0=no limit */
+    int32_t active_limit;            /* max active torrents overall, 0=no limit */
+
     /* Reader */
     int32_t responsive_mode;         /* 1=enabled (default), 0=disabled */
 } lt_bt_config;
@@ -132,11 +141,15 @@ TORRENT_API void lt_poll_alerts(lt_session_t session,
 TORRENT_API lt_torrent_id lt_add_magnet(lt_session_t session,
                                         const char* magnet_uri,
                                         const char* save_path,
-                                        int stream_only);
+                                        int stream_only,
+                                        int paused,
+                                        int auto_managed);
 TORRENT_API lt_torrent_id lt_add_torrent_file(lt_session_t session,
                                               const char* file_path,
                                               const char* save_path,
-                                              int stream_only);
+                                              int stream_only,
+                                              int paused,
+                                              int auto_managed);
 TORRENT_API void lt_remove_torrent(lt_session_t session,
                                    lt_torrent_id id, int delete_files);
 TORRENT_API void lt_pause_torrent(lt_session_t session, lt_torrent_id id);
@@ -156,6 +169,8 @@ TORRENT_API int  lt_get_files(lt_session_t session, lt_torrent_id id,
                               lt_file_info* out, int max_count);
 TORRENT_API void lt_set_file_priorities(lt_session_t session, lt_torrent_id id,
                                         const int32_t* priorities, int count);
+TORRENT_API int  lt_get_file_priorities(lt_session_t session, lt_torrent_id id,
+                                        int32_t* out, int max_count);
 
 /* streaming */
 TORRENT_API lt_stream_id lt_start_stream(lt_session_t session,
@@ -183,6 +198,15 @@ TORRENT_API void lt_set_cache_settings(lt_session_t session, lt_stream_id id,
 /* speed limits */
 TORRENT_API void lt_set_download_limit(lt_session_t session, int bytes_per_sec);
 TORRENT_API void lt_set_upload_limit(lt_session_t session, int bytes_per_sec);
+TORRENT_API void lt_set_torrent_download_limit(lt_session_t session, lt_torrent_id id, int bytes_per_sec);
+TORRENT_API void lt_set_torrent_upload_limit(lt_session_t session, lt_torrent_id id, int bytes_per_sec);
+
+/* queue control & auto managed */
+TORRENT_API void lt_set_torrent_auto_managed(lt_session_t session, lt_torrent_id id, int auto_managed);
+TORRENT_API void lt_queue_up(lt_session_t session, lt_torrent_id id);
+TORRENT_API void lt_queue_down(lt_session_t session, lt_torrent_id id);
+TORRENT_API void lt_queue_top(lt_session_t session, lt_torrent_id id);
+TORRENT_API void lt_queue_bottom(lt_session_t session, lt_torrent_id id);
 
 /* utility */
 TORRENT_API const char* lt_last_error(void);

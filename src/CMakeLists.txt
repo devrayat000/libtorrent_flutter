@@ -22,6 +22,14 @@ endif()
 add_library(libtorrent_flutter SHARED
     torrent_bridge.cpp
     torrent_bridge.h
+    common_types.cpp
+    common_types.h
+    stream_engine.cpp
+    stream_engine.h
+    http_server.cpp
+    http_server.h
+    session_wrapper.cpp
+    session_wrapper.h
 )
 
 target_compile_definitions(libtorrent_flutter PRIVATE
