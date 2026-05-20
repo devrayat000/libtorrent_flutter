@@ -149,12 +149,17 @@ jobs:
             local target="$1"
             local arch="$2"
             local prefix="$PWD/openssl-install-macos-${arch}"
+            # Fix: Handle arm64 vs x86_64 minimum OS targets dynamically
+            local min_target="${MACOSX_DEPLOYMENT_TARGET}"
+            if [ "${arch}" = "arm64" ]; then
+              min_target="11.0"
+            fi
             echo "=== Building OpenSSL: $target ($arch) ==="
             (
               cd openssl-src
               make distclean 2>/dev/null || true
               CC="$(xcrun -sdk macosx -find clang)" \
-              CFLAGS="-arch $arch -mmacosx-version-min=${MACOSX_DEPLOYMENT_TARGET} -isysroot $(xcrun --sdk macosx --show-sdk-path)" \
+              CFLAGS="-arch $arch -mmacosx-version-min=${min_target} -isysroot $(xcrun --sdk macosx --show-sdk-path)" \
               ./Configure $target \
                 no-shared no-tests no-ui-console no-docs \
                 --prefix="$prefix"
