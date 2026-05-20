@@ -101,7 +101,7 @@ jobs:
         if: matrix.arch == 'x64'
         uses: subosito/flutter-action@v2
         with:
-          channel: 'stable'
+          channel: "stable"
 
       - name: Run Dart smoke test
         if: matrix.arch == 'x64'
@@ -172,10 +172,6 @@ jobs:
         timeout-minutes: 25
 
       - name: Build libtorrent + bridge for one arch
-        # Reused below for arm64 and x86_64. We do this inline (twice) rather
-        # than as a composite action because the cross-compile flags differ
-        # subtly between archs (sysroot is shared, but cmake target arch and
-        # OPENSSL_ROOT_DIR differ).
         run: |
           set -euo pipefail
           git clone --depth 1 --branch v${LIBTORRENT_VERSION} \
@@ -187,14 +183,21 @@ jobs:
             local ossl_root="$PWD/openssl-install-macos-${arch}"
             local sdk
             sdk=$(xcrun --sdk macosx --show-sdk-path)
-            echo "═══ Building slice: ${arch} ═══"
+            
+            # Fix: Handle arm64 vs x86_64 minimum OS targets dynamically
+            local min_target="${MACOSX_DEPLOYMENT_TARGET}"
+            if [ "${arch}" = "arm64" ]; then
+              min_target="11.0"
+            fi
+
+            echo "═══ Building slice: ${arch} (Targeting macOS ${min_target}) ═══"
 
             mkdir -p "$slice_dir" && (
               cd "$slice_dir"
               cmake .. \
                 -DCMAKE_BUILD_TYPE=Release \
                 -DCMAKE_OSX_ARCHITECTURES=${arch} \
-                -DCMAKE_OSX_DEPLOYMENT_TARGET=${MACOSX_DEPLOYMENT_TARGET} \
+                -DCMAKE_OSX_DEPLOYMENT_TARGET=${min_target} \
                 -DCMAKE_OSX_SYSROOT=${sdk} \
                 -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
                 -DBUILD_SHARED_LIBS=OFF \
@@ -217,7 +220,7 @@ jobs:
 
             clang++ -shared -O2 -std=c++17 \
               -arch ${arch} \
-              -mmacosx-version-min=${MACOSX_DEPLOYMENT_TARGET} \
+              -mmacosx-version-min=${min_target} \
               -isysroot ${sdk} \
               -DTORRENT_BRIDGE_EXPORTS \
               -DTORRENT_NO_DEPRECATE \
@@ -229,10 +232,12 @@ jobs:
               src/torrent_bridge.cpp \
               -Wl,-force_load,"${lt_lib}" \
               ${ossl_root}/lib/libssl.a ${ossl_root}/lib/libcrypto.a \
-              -framework CoreFoundation -framework SystemConfiguration \
+              -framework CoreFoundation \
+              -framework SystemConfiguration \
+              -framework Security \
+              -framework IOKit \
               -install_name @rpath/liblibtorrent_flutter.dylib
 
-            # Sanity check: no Homebrew references should leak in
             if otool -L "${out_dir}/liblibtorrent_flutter.dylib" | grep -q /opt/homebrew; then
               echo "❌ ERROR: dylib references Homebrew paths"
               otool -L "${out_dir}/liblibtorrent_flutter.dylib"
@@ -244,7 +249,6 @@ jobs:
           build_slice arm64
           build_slice x86_64
         timeout-minutes: 45
-
       - name: Lipo arm64 + x86_64 into a universal2 dylib
         run: |
           mkdir -p build-macos-universal
@@ -266,7 +270,7 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          channel: 'stable'
+          channel: "stable"
 
       - name: Run Dart smoke test
         run: |
@@ -331,7 +335,7 @@ jobs:
         if: matrix.arch == 'x64'
         uses: subosito/flutter-action@v2
         with:
-          channel: 'stable'
+          channel: "stable"
 
       - name: Run Dart smoke test
         if: matrix.arch == 'x64'
